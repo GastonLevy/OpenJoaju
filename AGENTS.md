@@ -6,3 +6,4 @@
 * Avoid new dependencies unless clearly necessary.
 * Do not make assumptions about future requirements.
 * Avoid long explanations unless explicitly requested.
+* Use the project virtual environment at `.venv` for Python commands and dependency installation.
