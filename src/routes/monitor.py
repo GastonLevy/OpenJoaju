@@ -1,3 +1,4 @@
+import errno
 import socket
 import struct
 from collections.abc import Iterator
@@ -11,6 +12,8 @@ from .dto import RouteDTO
 _NETLINK_ROUTE = 0
 _NLMSG_ERROR = 2
 _NLMSG_DONE = 3
+_NLMSG_OVERRUN = 4
+_NLM_F_DUMP_INTR = 0x10
 _RTM_NEWROUTE = 24
 _RTM_DELROUTE = 25
 _RTMGRP_IPV4_ROUTE = 0x40
@@ -20,6 +23,10 @@ _RTMGRP_IPV6_ROUTE = 0x400
 class RouteEventType(StrEnum):
     ADDED = "route_added"
     REMOVED = "route_removed"
+
+
+class RouteSynchronizationError(OSError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -35,26 +42,51 @@ def monitor_events() -> Iterator[RouteEvent]:
         netlink.bind((0, groups))
 
         while True:
-            yield from _parse_messages(netlink.recv(65535))
+            try:
+                data = netlink.recv(65535)
+            except OSError as error:
+                if error.errno == errno.ENOBUFS:
+                    raise RouteSynchronizationError(
+                        errno.ENOBUFS,
+                        "Netlink route monitoring lost synchronization",
+                    ) from error
+                raise
+            yield from _parse_messages(data)
 
 
 def _parse_messages(data: bytes) -> Iterator[RouteEvent]:
     offset = 0
 
-    while offset + 16 <= len(data):
-        length, message_type, _, _, _ = struct.unpack_from("=IHHII", data, offset)
+    while offset < len(data):
+        if offset + 16 > len(data):
+            raise RouteSynchronizationError("Invalid Netlink route event")
+        length, message_type, flags, _, _ = struct.unpack_from(
+            "=IHHII", data, offset
+        )
         if length < 16 or offset + length > len(data):
-            raise OSError("Invalid Netlink route event")
+            raise RouteSynchronizationError("Invalid Netlink route event")
 
         if message_type == _NLMSG_DONE:
+            if flags & _NLM_F_DUMP_INTR:
+                raise RouteSynchronizationError(
+                    "Interrupted Netlink route monitoring stream"
+                )
             return
 
         if message_type == _NLMSG_ERROR:
             if length < 20:
-                raise OSError("Invalid Netlink route event error response")
+                raise RouteSynchronizationError(
+                    "Invalid Netlink route event error response"
+                )
             error_code = struct.unpack_from("=i", data, offset + 16)[0]
             if error_code:
-                raise OSError(-error_code, "Netlink route monitoring failed")
+                raise RouteSynchronizationError(
+                    -error_code, "Netlink route monitoring failed"
+                )
+        elif message_type == _NLMSG_OVERRUN:
+            raise RouteSynchronizationError(
+                "Netlink route monitoring receive buffer overrun"
+            )
         elif message_type in (_RTM_NEWROUTE, _RTM_DELROUTE):
             event_type = (
                 RouteEventType.ADDED
@@ -62,7 +94,13 @@ def _parse_messages(data: bytes) -> Iterator[RouteEvent]:
                 else RouteEventType.REMOVED
             )
             payload = data[offset + 16 : offset + length]
-            for route in _parse_route(payload):
+            try:
+                routes = _parse_route(payload)
+            except OSError as error:
+                raise RouteSynchronizationError(
+                    "Invalid Netlink route event payload"
+                ) from error
+            for route in routes:
                 yield RouteEvent(event_type=event_type, route=route)
 
         offset += _aligned(length)

@@ -34,6 +34,15 @@ class RouteState:
             return self._remove(event.route)
         return False
 
+    def resynchronize(self) -> bool:
+        routes = {
+            _route_identity(route): route for route in discover_routes()
+        }
+        if routes == self._routes:
+            return False
+        self._routes = routes
+        return True
+
     def _add(self, route: RouteDTO) -> bool:
         identity = _route_identity(route)
         if self._routes.get(identity) == route:

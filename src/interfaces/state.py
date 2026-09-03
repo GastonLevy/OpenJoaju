@@ -50,6 +50,15 @@ class InterfaceState:
 
         return False
 
+    def resynchronize(self) -> bool:
+        interfaces = {
+            interface.name: interface for interface in discover_interfaces()
+        }
+        if interfaces == self._interfaces:
+            return False
+        self._interfaces = interfaces
+        return True
+
     def _refresh_interface(self, name: str) -> bool:
         discovered = next(
             (interface for interface in discover_interfaces() if interface.name == name),

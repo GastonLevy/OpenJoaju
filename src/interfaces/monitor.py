@@ -1,3 +1,4 @@
+import errno
 import socket
 import struct
 from collections.abc import Iterator
@@ -14,6 +15,8 @@ _RTM_NEWADDR = 20
 _RTM_DELADDR = 21
 _NLMSG_ERROR = 2
 _NLMSG_DONE = 3
+_NLMSG_OVERRUN = 4
+_NLM_F_DUMP_INTR = 0x10
 
 _RTMGRP_LINK = 1
 _RTMGRP_IPV4_IFADDR = 0x10
@@ -51,6 +54,10 @@ class InterfaceEventType(StrEnum):
     IPV6_ADDRESS_REMOVED = "ipv6_address_removed"
 
 
+class InterfaceSynchronizationError(OSError):
+    pass
+
+
 @dataclass(frozen=True)
 class InterfaceEvent:
     event_type: InterfaceEventType
@@ -78,7 +85,15 @@ def monitor_events() -> Iterator[InterfaceEvent]:
 
         previous_event: InterfaceEvent | None = None
         while True:
-            data = netlink.recv(65535)
+            try:
+                data = netlink.recv(65535)
+            except OSError as error:
+                if error.errno == errno.ENOBUFS:
+                    raise InterfaceSynchronizationError(
+                        errno.ENOBUFS,
+                        "Netlink interface monitoring lost synchronization",
+                    ) from error
+                raise
             for event in _parse_messages(
                 data, interface_names, operational_states
             ):
@@ -96,20 +111,36 @@ def _parse_messages(
     events: list[InterfaceEvent] = []
     offset = 0
 
-    while offset + 16 <= len(data):
-        length, message_type, _, _, _ = struct.unpack_from("=IHHII", data, offset)
+    while offset < len(data):
+        if offset + 16 > len(data):
+            raise InterfaceSynchronizationError("Invalid Netlink response")
+        length, message_type, flags, _, _ = struct.unpack_from(
+            "=IHHII", data, offset
+        )
         if length < 16 or offset + length > len(data):
-            raise OSError("Invalid Netlink response")
+            raise InterfaceSynchronizationError("Invalid Netlink response")
 
         payload = data[offset + 16 : offset + length]
         if message_type == _NLMSG_DONE:
+            if flags & _NLM_F_DUMP_INTR:
+                raise InterfaceSynchronizationError(
+                    "Interrupted Netlink interface monitoring stream"
+                )
             break
         if message_type == _NLMSG_ERROR:
             if len(payload) < 4:
-                raise OSError("Invalid Netlink error response")
+                raise InterfaceSynchronizationError(
+                    "Invalid Netlink error response"
+                )
             error_code = struct.unpack_from("=i", payload)[0]
             if error_code:
-                raise OSError(-error_code, "Netlink monitoring failed")
+                raise InterfaceSynchronizationError(
+                    -error_code, "Netlink monitoring failed"
+                )
+        elif message_type == _NLMSG_OVERRUN:
+            raise InterfaceSynchronizationError(
+                "Netlink interface monitoring receive buffer overrun"
+            )
         elif message_type in (_RTM_NEWLINK, _RTM_DELLINK):
             event = _parse_link_event(
                 message_type,
@@ -136,7 +167,7 @@ def _parse_link_event(
     operational_states: dict[int, str],
 ) -> InterfaceEvent | None:
     if len(payload) < 16:
-        return None
+        raise InterfaceSynchronizationError("Invalid Netlink link event")
 
     _, _, _, interface_index, _, changed_flags = struct.unpack_from(
         "=BBHiII", payload
@@ -192,7 +223,7 @@ def _parse_address_event(
     interface_names: dict[int, str],
 ) -> InterfaceEvent | None:
     if len(payload) < 8:
-        return None
+        raise InterfaceSynchronizationError("Invalid Netlink address event")
 
     family, prefix_length, _, _, interface_index = struct.unpack_from(
         "=4B I", payload
@@ -239,9 +270,13 @@ def _parse_attributes(payload: bytes, offset: int) -> dict[int, bytes]:
     while offset + 4 <= len(payload):
         length, attribute_type = struct.unpack_from("=HH", payload, offset)
         if length < 4 or offset + length > len(payload):
-            break
+            raise InterfaceSynchronizationError(
+                "Invalid Netlink interface attribute"
+            )
         attributes[attribute_type & 0x3FFF] = payload[offset + 4 : offset + length]
         offset += _aligned(length)
+    if offset != len(payload):
+        raise InterfaceSynchronizationError("Invalid Netlink interface attribute")
     return attributes
 
 
