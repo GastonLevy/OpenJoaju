@@ -22,82 +22,72 @@
 
 OpenJoaju is a lightweight and modular Linux network management project.
 
-It is designed to be installed on an existing Linux system and provide a clear interface for inspecting and eventually managing the networking configuration already present on that machine.
+It runs on an existing Linux system and provides structured discovery, real-time monitoring, state tracking, and human-readable inspection of the networking configuration already present on the machine.
 
-OpenJoaju does not replace Linux networking.
+**OpenJoaju does not replace Linux networking. It uses it.**
 
-It uses it.
+Linux remains the source of truth. OpenJoaju reads native Linux interfaces such as Netlink, `/proc`, and `/sys` to understand what the system is actually doing.
 
-A fresh Debian installation, an existing server, a homelab machine, or a Linux router should all be able to run OpenJoaju without requiring the system to be rebuilt around it.
+The project is currently read-only. Configuration-changing functionality will only be introduced after the inspection and monitoring foundation is stable.
 
 ## Why OpenJoaju?
 
-Linux already provides powerful networking capabilities, but inspecting a system often means moving between multiple commands, files, APIs, and tools.
+Linux already provides powerful networking capabilities, but understanding the complete state of a machine often means moving between multiple commands, kernel interfaces, files, and networking tools.
 
-OpenJoaju aims to provide a single networking-focused view of the system while keeping Linux itself as the source of truth.
+OpenJoaju aims to provide a single networking-focused view while preserving the Linux system underneath.
 
 The project focuses on:
 
-- lightweight operation;
-- modular components;
-- existing Linux installations;
-- transparent and inspectable code;
 - native Linux networking capabilities;
-- minimal unnecessary dependencies.
+- compatibility with existing Linux installations;
+- independent and modular components;
+- event-driven monitoring instead of unnecessary polling;
+- structured networking data;
+- minimal external dependencies;
+- transparent and inspectable code.
 
 OpenJoaju is not intended to become a general-purpose Linux administration panel.
 
 Its scope is networking.
 
-## Current Development
+## What Works Today?
 
-The project is currently focused on building a reliable read-only networking inspection and monitoring layer.
+OpenJoaju currently implements three independent networking modules.
 
-The interfaces module currently provides:
+### Interfaces
 
-- network interface discovery;
-- interface type detection;
-- operational state;
-- MAC addresses;
-- MTU;
-- IPv4 and IPv6 addresses with prefix lengths;
-- interface index;
-- carrier state;
-- link speed;
-- duplex information;
-- RX/TX statistics;
-- interface lookup by name or MAC address;
-- real-time interface monitoring through Netlink;
-- IPv4 and IPv6 address change monitoring;
-- in-memory interface state tracking.
+Read-only discovery and real-time monitoring of Linux network interfaces.
 
-Interface and address changes are received directly from the Linux kernel through Netlink rather than through continuous polling.
+Currently includes interface state, type, MAC address, MTU, IPv4/IPv6 addresses, carrier information, link speed, duplex mode, traffic statistics, address changes, and in-memory state tracking.
 
-Planned core areas include:
+Interface and address changes are received directly from the Linux kernel through Netlink.
 
-- routing tables;
-- routes;
-- ARP / NDP neighbors;
-- IP forwarding state;
-- VLANs;
-- bridges;
-- bonding;
-- network namespaces;
-- firewall and NAT inspection.
+### Routes
 
-The initial MVP targets Debian.
+Read-only discovery and real-time monitoring of Linux routing tables.
 
-Configuration-changing features will be introduced incrementally after the inspection and monitoring layers are stable.
+Currently includes IPv4 and IPv6 routes, routing tables, destination prefixes, gateways, output interfaces, preferred sources, metrics, protocols, scopes, route types, multipath routes, and in-memory routing state.
 
-## Concept
+Route discovery and monitoring use native Netlink rather than parsing `ip route` output.
+
+### Firewall
+
+Read-only discovery and real-time monitoring of Linux nftables configuration.
+
+Currently includes nftables tables, chains, rules, structured rule expressions, semantic decoding of supported expressions, and in-memory firewall state.
+
+Firewall discovery and monitoring communicate directly with the kernel through Netfilter Netlink rather than parsing `nft`, `iptables`, `ufw`, or `firewall-cmd` output.
+
+## Architecture
+
+Each networking area is implemented as an independent module.
 
 ```text
                     OpenJoaju
                         │
-              Presentation Layers
-                CLI / Web / API
+                 Presentation
                         │
-                 Module State
+                  Module State
                         │
               Discovery + Monitoring
                         │
@@ -110,118 +100,141 @@ Configuration-changing features will be introduced incrementally after the inspe
                      Linux
 ```
 
-Linux remains responsible for networking.
-
-OpenJoaju discovers, monitors, and presents what is actually happening on the machine.
-
-## Existing Systems
-
-OpenJoaju is intended to work with machines that are already configured.
-
-For example, a Linux system may already contain:
+Each module owns its own:
 
 ```text
-Interfaces
-├── Ethernet
-├── Wi-Fi
-├── bridges
-├── VLAN interfaces
-└── virtual interfaces
-
-Routing
-├── default routes
-├── static routes
-└── custom routing tables
-
-Networking
-├── port forwarding
-├── firewall rules
-├── network namespaces
-└── additional services
-```
-
-Installing OpenJoaju should not require recreating that configuration.
-
-The goal is to discover what is already there, monitor changes, and present the relevant networking information in one place.
-
-## Modular by Design
-
-Networking functionality is divided into independent modules.
-
-Each module is responsible for discovering and monitoring its own Linux networking state while exposing structured data that can later be consumed by different presentation layers.
-
-Conceptually:
-
-```text
-OpenJoaju
-│
-├── Interfaces
-├── Routes
-├── Neighbors
-├── Firewall / NAT
-├── Namespaces
-│
-└── Optional Integrations
-    ├── Docker / Containers
-    ├── FRRouting
-    ├── DHCP
-    ├── DNS
-    └── Monitoring
-```
-
-A machine should only need the components relevant to the networking functionality it actually uses.
-
-For example, a server without Docker should not require Docker-specific OpenJoaju components.
-
-## Interface Architecture
-
-The current interfaces module separates system discovery, monitoring, state, and presentation.
-
-```text
-interfaces/
+<module>/
 │
 ├── dto.py
-│
 ├── discover/
-│   ├── links.py
-│   └── addresses.py
-│
 ├── monitor.py
 ├── state.py
 ├── cli.py
 └── main.py
 ```
 
-The general flow is:
+Modules do not depend on each other for networking discovery, monitoring, state management, or presentation.
 
-```text
-Linux
-  │
-  ├── Initial discovery
-  │        │
-  │        ▼
-  │   InterfaceState
-  │        ▲
-  │        │
-  └── Netlink events
-           │
-           ▼
-        monitor.py
+Discovery creates a complete snapshot of the relevant Linux state.
+
+Monitoring receives changes from the kernel as they happen.
+
+State combines both into a current structured representation of the system.
+
+If an event stream becomes unreliable, OpenJoaju detects the synchronization loss rather than silently continuing with potentially stale state. The affected module can rebuild its state from a fresh discovery snapshot.
+
+## Quick Start
+
+OpenJoaju currently targets Debian and requires Python.
+
+Clone the repository:
+
+```bash
+git clone https://github.com/GastonLevy/OpenJoaju.git
+cd OpenJoaju
 ```
 
-Discovery builds the initial snapshot.
+Create and activate a virtual environment:
 
-The monitor subscribes to Linux kernel events.
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
 
-The state layer determines whether those events actually change OpenJoaju's current representation of the system.
+Run interface inspection:
 
-Presentation layers remain independent from the underlying Linux discovery and monitoring implementation.
+```bash
+python -m src.interfaces.main
+```
 
-## Future Integrations
+Run routing inspection:
 
-OpenJoaju may eventually detect networking software already installed on the machine and expose additional capabilities through optional modules.
+```bash
+python -m src.routes.main
+```
 
-Potential integrations include:
+Run firewall inspection:
+
+```bash
+python -m src.firewall.main
+```
+
+Some Linux networking information may require appropriate system permissions.
+
+### Examples
+
+List interface names:
+
+```bash
+python -m src.interfaces.main --list names
+```
+
+Inspect a specific interface:
+
+```bash
+python -m src.interfaces.main --name eth0
+```
+
+List routing tables:
+
+```bash
+python -m src.routes.main --list tables
+```
+
+Inspect the main routing table:
+
+```bash
+python -m src.routes.main --table main
+```
+
+List nftables tables:
+
+```bash
+python -m src.firewall.main --list tables
+```
+
+Inspect an nftables table:
+
+```bash
+python -m src.firewall.main --family ip --table filter
+```
+
+## Design Principles
+
+OpenJoaju follows a few core principles:
+
+**Linux remains the source of truth.**  
+OpenJoaju observes the networking state that already exists on the machine.
+
+**Native interfaces first.**  
+When practical, kernel interfaces and the Python standard library are preferred over parsing external command output.
+
+**Event-driven monitoring.**  
+When Linux provides an appropriate event mechanism, OpenJoaju uses it instead of continuous polling.
+
+**Independent modules.**  
+Networking modules own their discovery, monitoring, state, and presentation logic without depending on other networking modules.
+
+**Structured data.**  
+Internal networking state is represented using structured DTOs rather than CLI-formatted text.
+
+**Read-only first.**  
+Reliable inspection and monitoring come before configuration-changing functionality.
+
+## Roadmap
+
+Potential future networking areas include:
+
+- ARP and NDP neighbors;
+- VLANs;
+- bridges;
+- bonding;
+- IP forwarding state;
+- network namespaces;
+- NAT inspection;
+- VPN networking.
+
+Potential optional integrations may later include:
 
 - Docker and container networking;
 - FRRouting;
@@ -229,54 +242,48 @@ Potential integrations include:
 - BGP;
 - DHCP services;
 - DNS services;
-- firewall and NAT management;
-- VPN networking;
-- network monitoring.
+- network monitoring systems.
 
-These integrations are not part of the initial MVP.
+These are future areas and are not part of the currently implemented core.
 
 ## Technology
 
-### Backend and system integration
+OpenJoaju currently favors:
 
 ```text
 Python
 Linux APIs
 Netlink / rtnetlink
+Netfilter Netlink
 Linux sockets
 /proc
 /sys
 ```
 
-The project currently favors the Python standard library and native Linux interfaces where practical.
+The Python standard library and native Linux interfaces are preferred where practical.
 
 External dependencies should only be introduced when they provide a clear technical benefit.
 
-### Web interface
-
-The planned web layer currently favors:
-
-```text
-Flask
-Jinja
-HTML
-CSS
-Minimal JavaScript
-```
-
-The web interface will consume structured OpenJoaju data rather than executing or parsing CLI output.
-
-Low-level components may use C in the future when there is a concrete technical reason for doing so.
-
 ## Project Status
 
-OpenJoaju is currently in early development.
+OpenJoaju is in **early development**.
 
-The interface discovery, inspection, Netlink monitoring, and in-memory state foundations are under active development.
+The current foundation provides working read-only discovery, event-driven monitoring, and in-memory state management for:
 
-The initial objective is to build a reliable read-only representation of Linux networking before introducing configuration-changing functionality.
+- network interfaces;
+- routing tables and routes;
+- nftables firewall state.
 
-Expect breaking changes while the architecture is being established.
+The initial target platform is Debian.
+
+Breaking changes should be expected while the architecture and module set continue to evolve.
+
+## Documentation
+
+More detailed technical documentation is available under `docs/`:
+
+- [`docs/architecture.md`](docs/architecture.md) — architecture and module design rules.
+- [`docs/modules.md`](docs/modules.md) — currently implemented modules and their capabilities.
 
 ## Philosophy
 
@@ -294,9 +301,9 @@ Make it easier to operate.
 
 OpenJoaju is being developed openly.
 
-Contribution guidelines, development setup, and issue templates will be added as the project matures.
+Contribution guidelines, development setup, and issue templates will be expanded as the project matures.
 
-Bug reports, networking edge cases, Linux compatibility findings, and implementation discussions will be particularly valuable during the early stages.
+Bug reports, Linux networking edge cases, compatibility findings, and implementation discussions are particularly valuable during early development.
 
 ---
 
