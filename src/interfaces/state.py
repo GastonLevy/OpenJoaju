@@ -2,7 +2,7 @@ from dataclasses import replace
 
 from .discover import discover_interfaces
 from .dto import InterfaceDTO
-from .monitor import InterfaceEvent
+from .monitor import InterfaceEvent, InterfaceEventType
 
 
 class InterfaceState:
@@ -18,17 +18,17 @@ class InterfaceState:
         return list(self._interfaces.values())
 
     def apply_event(self, event: InterfaceEvent) -> bool:
-        if event.event_type == "interface_created":
+        if event.event_type is InterfaceEventType.CREATED:
             return self._refresh_interface(event.interface_name)
 
-        if event.event_type == "interface_removed":
+        if event.event_type is InterfaceEventType.REMOVED:
             return self._interfaces.pop(event.interface_name, None) is not None
 
         interface = self._interfaces.get(event.interface_name)
         if interface is None:
             return False
 
-        if event.event_type == "interface_state_changed":
+        if event.event_type is InterfaceEventType.STATE_CHANGED:
             if (
                 event.operational_state is None
                 or event.operational_state == interface.operational_state
@@ -39,13 +39,13 @@ class InterfaceState:
             )
             return True
 
-        if event.event_type == "ipv4_address_added":
+        if event.event_type is InterfaceEventType.IPV4_ADDRESS_ADDED:
             return self._add_address(interface, event.address, ipv6=False)
-        if event.event_type == "ipv4_address_removed":
+        if event.event_type is InterfaceEventType.IPV4_ADDRESS_REMOVED:
             return self._remove_address(interface, event.address, ipv6=False)
-        if event.event_type == "ipv6_address_added":
+        if event.event_type is InterfaceEventType.IPV6_ADDRESS_ADDED:
             return self._add_address(interface, event.address, ipv6=True)
-        if event.event_type == "ipv6_address_removed":
+        if event.event_type is InterfaceEventType.IPV6_ADDRESS_REMOVED:
             return self._remove_address(interface, event.address, ipv6=True)
 
         return False

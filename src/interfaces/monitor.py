@@ -2,6 +2,7 @@ import socket
 import struct
 from collections.abc import Iterator
 from dataclasses import dataclass
+from enum import StrEnum
 
 from .discover.links import discover_links
 
@@ -40,9 +41,19 @@ _OPERSTATES = {
 }
 
 
+class InterfaceEventType(StrEnum):
+    CREATED = "interface_created"
+    REMOVED = "interface_removed"
+    STATE_CHANGED = "interface_state_changed"
+    IPV4_ADDRESS_ADDED = "ipv4_address_added"
+    IPV4_ADDRESS_REMOVED = "ipv4_address_removed"
+    IPV6_ADDRESS_ADDED = "ipv6_address_added"
+    IPV6_ADDRESS_REMOVED = "ipv6_address_removed"
+
+
 @dataclass(frozen=True)
 class InterfaceEvent:
-    event_type: str
+    event_type: InterfaceEventType
     interface_name: str
     address: str | None = None
     operational_state: str | None = None
@@ -148,7 +159,7 @@ def _parse_link_event(
     if message_type == _RTM_DELLINK:
         interface_names.pop(interface_index, None)
         operational_states.pop(interface_index, None)
-        return InterfaceEvent("interface_removed", interface_name)
+        return InterfaceEvent(InterfaceEventType.REMOVED, interface_name)
 
     previous_name = interface_names.get(interface_index)
     previous_state = operational_states.get(interface_index)
@@ -158,7 +169,7 @@ def _parse_link_event(
 
     if previous_name is None:
         return InterfaceEvent(
-            "interface_created",
+            InterfaceEventType.CREATED,
             interface_name,
             operational_state=operational_state,
         )
@@ -168,7 +179,7 @@ def _parse_link_event(
     ) or bool(changed_flags & _STATE_FLAGS)
     if state_changed:
         return InterfaceEvent(
-            "interface_state_changed",
+            InterfaceEventType.STATE_CHANGED,
             interface_name,
             operational_state=operational_state or previous_state,
         )
@@ -192,10 +203,18 @@ def _parse_address_event(
     attributes = _parse_attributes(payload, 8)
     if family == socket.AF_INET:
         packed_address = attributes.get(_IFA_LOCAL) or attributes.get(_IFA_ADDRESS)
-        family_name = "ipv4"
+        event_type = (
+            InterfaceEventType.IPV4_ADDRESS_ADDED
+            if message_type == _RTM_NEWADDR
+            else InterfaceEventType.IPV4_ADDRESS_REMOVED
+        )
     else:
         packed_address = attributes.get(_IFA_ADDRESS)
-        family_name = "ipv6"
+        event_type = (
+            InterfaceEventType.IPV6_ADDRESS_ADDED
+            if message_type == _RTM_NEWADDR
+            else InterfaceEventType.IPV6_ADDRESS_REMOVED
+        )
     if packed_address is None:
         return None
 
@@ -207,10 +226,9 @@ def _parse_address_event(
             return None
         interface_names[interface_index] = interface_name
 
-    action = "added" if message_type == _RTM_NEWADDR else "removed"
     address = f"{socket.inet_ntop(family, packed_address)}/{prefix_length}"
     return InterfaceEvent(
-        f"{family_name}_address_{action}",
+        event_type,
         interface_name,
         address=address,
     )
